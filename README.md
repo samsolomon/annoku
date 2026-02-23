@@ -76,3 +76,32 @@ Each annotation can include:
 
 - `npm run build`
 - `npm test`
+
+## Run as MCP server
+
+This repository can run as a standalone MCP server over stdio.
+
+Build and run:
+
+```bash
+npm run build
+npm start
+```
+
+Register in Codex CLI:
+
+```bash
+codex mcp add annoku -- node /absolute/path/to/annoku/dist/mcp.js
+```
+
+Core MCP tools exposed by this server:
+
+- `start_annotation_server`
+- `stop_annotation_server`
+- `get_annotation_port`
+- `build_overlay_script`
+- `list_annotations`
+- `resolve_annotation`
+- `delete_annotation`
+- `clear_annotations`
+- `wait_for_send`
