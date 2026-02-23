@@ -7,7 +7,7 @@ Standalone browser annotation overlay and HTTP annotation server.
 ## Project status
 
 This repository contains the annotation functionality that was extracted from
-`/relay-inspect` so it can be reused by other MCP servers and tooling.
+`[relay-inspect](https://github.com/samsolomon/relay-inspect)` so it can be reused by other MCP servers and tooling.
 
 Originally embedded in `relay-inspect/src/annotationOverlay.ts` and
 `relay-inspect/src/annotationServer.ts`, it is now maintained as a standalone
