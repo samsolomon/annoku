@@ -1,4 +1,4 @@
-# relay-annotations
+# annoku
 
 Standalone browser annotation overlay and HTTP annotation server.
 
