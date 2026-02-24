@@ -12,7 +12,7 @@ overlay.iife.js  →  annotationServer.ts  →  mcp.ts
 ```
 
 1. **Overlay** (`src/overlay.iife.js`) — self-contained ES2017 IIFE injected into the browser via `Runtime.evaluate`. Communicates with the annotation server over HTTP (`fetch` to `127.0.0.1`).
-2. **HTTP server** (`src/annotationServer.ts`) — `node:http` server on localhost. CRUD for annotations, screenshot callback, send-notification long-poll. No MCP or CDP knowledge.
+2. **HTTP server** (`src/annotationServer.ts`) — `node:http` server on localhost. CRUD for annotations, screenshot callback. No MCP or CDP knowledge.
 3. **MCP server** (`src/mcp.ts`) — stdio transport, registers tools that delegate to the annotation server and overlay script builder.
 
 `src/index.ts` is the public API barrel — re-exports from server + overlay.

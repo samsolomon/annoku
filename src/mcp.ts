@@ -12,21 +12,6 @@ const server = new McpServer({
 
 annotationServer.onOverlayScript(buildOverlayScript);
 
-annotationServer.onSendNotify((count) => {
-  server
-    .sendLoggingMessage({
-      level: "info",
-      logger: "annoku-annotations",
-      data:
-        count > 0
-          ? `User clicked Send with ${count} open annotation(s).`
-          : "User clicked Send with no open annotations.",
-    })
-    .catch(() => {
-      // Ignore notification errors when transport is disconnected.
-    });
-});
-
 server.tool("start_annotation_server", "Start the local annotation HTTP server (idempotent).", {}, async () => {
   const port = await annotationServer.start();
   return {
@@ -114,29 +99,6 @@ server.tool("clear_annotations", "Clear all annotations from the server.", {}, a
     content: [{ type: "text", text: JSON.stringify({ success: true, deleted }, null, 2) }],
   };
 });
-
-server.tool(
-  "wait_for_send",
-  "Long-poll until user clicks Send in the overlay, then return open annotations.",
-  {
-    timeout: z.number().int().min(1).max(600).default(300).describe("Timeout in seconds"),
-  },
-  async ({ timeout }) => {
-    if (getAnnotationPort() === null) {
-      await annotationServer.start();
-    }
-    const result = await annotationServer.waitForSend(timeout * 1000);
-    if (!result.triggered) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ sent: false, count: 0, annotations: [] }, null, 2) }],
-      };
-    }
-    const open = annotationServer.getAnnotations().filter((a) => a.status === "open");
-    return {
-      content: [{ type: "text", text: JSON.stringify({ sent: true, count: open.length, annotations: open }, null, 2) }],
-    };
-  },
-);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

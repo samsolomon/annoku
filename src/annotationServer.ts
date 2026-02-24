@@ -155,11 +155,6 @@ export class AnnotationServer {
   private port: number | null = null;
   private annotations = new Map<string, Annotation>();
   private screenshotCallback: ScreenshotCallback | null = null;
-  private sendResolver: (() => void) | null = null;
-  private sendCanceller: (() => void) | null = null;
-  private sendLatched = false;
-  private sendNotifyCallback: ((count: number) => void) | null = null;
-  private sentTriggered = false;
   private persistEnabled = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private overlayScriptBuilder: ((port: number) => string) | null = null;
@@ -172,64 +167,10 @@ export class AnnotationServer {
   }
 
   /**
-   * Register a callback fired when the user clicks "Send to AI".
-   * Used to push an MCP logging notification to the agent.
-   */
-  onSendNotify(cb: (count: number) => void): void {
-    this.sendNotifyCallback = cb;
-  }
-
-  /**
    * Register the overlay script builder so the server can serve it via GET /overlay.js.
    */
   onOverlayScript(builder: (port: number) => string): void {
     this.overlayScriptBuilder = builder;
-  }
-
-  consumeSentState(): boolean {
-    if (this.sentTriggered) {
-      this.sentTriggered = false;
-      return true;
-    }
-    return false;
-  }
-
-  waitForSend(timeoutMs: number): Promise<{ triggered: boolean }> {
-    // If latched from a previous Send click, consume it immediately
-    if (this.sendLatched) {
-      this.sendLatched = false;
-      return Promise.resolve({ triggered: true });
-    }
-
-    // Cancel any existing waiter (e.g. agent called again before timeout)
-    if (this.sendCanceller) {
-      this.sendCanceller();
-    }
-
-    return new Promise((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | null = null;
-
-      const cleanup = () => {
-        this.sendResolver = null;
-        this.sendCanceller = null;
-        if (timer) clearTimeout(timer);
-      };
-
-      this.sendResolver = () => {
-        cleanup();
-        resolve({ triggered: true });
-      };
-
-      this.sendCanceller = () => {
-        cleanup();
-        resolve({ triggered: false });
-      };
-
-      timer = setTimeout(() => {
-        cleanup();
-        resolve({ triggered: false });
-      }, timeoutMs);
-    });
   }
 
   private loadPersistedAnnotations(): void {
@@ -398,23 +339,6 @@ export class AnnotationServer {
           "Content-Type": "application/javascript",
         });
         res.end(script);
-        return;
-      }
-
-      // POST /annotations/send — trigger the long-poll resolver
-      if (method === "POST" && path === "/annotations/send") {
-        if (this.sendResolver) {
-          this.sendResolver();
-        } else {
-          this.sendLatched = true;
-        }
-        this.sentTriggered = true;
-        // Notify agent via MCP logging
-        if (this.sendNotifyCallback) {
-          const openCount = Array.from(this.annotations.values()).filter((a) => a.status === "open").length;
-          this.sendNotifyCallback(openCount);
-        }
-        jsonResponse(res, 200, { success: true }, req);
         return;
       }
 

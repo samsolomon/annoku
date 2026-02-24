@@ -18,8 +18,6 @@ package with no CDP or MCP-specific runtime dependencies.
 - Browser overlay script generation (`buildOverlayScript(port)`)
 - Local HTTP annotation server with CRUD endpoints
 - Screenshot callback hook (`onScreenshot`) implemented by the consumer
-- Send-notification callback hook (`onSendNotify`) implemented by the consumer
-- Long-poll support for "Send to AI" (`waitForSend`)
 
 The package intentionally has no CDP or MCP knowledge. Consumers provide those
 integrations from their own runtime.
@@ -48,11 +46,6 @@ annotationServer.onScreenshot(async (rect) => {
   return null;
 });
 
-annotationServer.onSendNotify((count) => {
-  // consumer-owned send notification
-  console.log("send clicked", count);
-});
-
 const port = await annotationServer.start();
 const script = buildOverlayScript(port);
 ```
@@ -62,8 +55,8 @@ const script = buildOverlayScript(port);
 1. Consumer starts `AnnotationServer`
 2. Consumer injects `buildOverlayScript(port)` into the browser page
 3. User creates visual annotations in the overlay
-4. Overlay sends annotation data to local server endpoints
-5. Consumer receives send events via `waitForSend` and processes them
+4. Overlay creates annotations via local server endpoints
+5. Agent reads annotations via MCP tools and resolves them
 
 Each annotation can include:
 
@@ -104,4 +97,3 @@ Core MCP tools exposed by this server:
 - `resolve_annotation`
 - `delete_annotation`
 - `clear_annotations`
-- `wait_for_send`

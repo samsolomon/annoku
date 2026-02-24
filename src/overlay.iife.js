@@ -44,13 +44,6 @@
   var selectionRectEl = null;
   var dragHighlighted = []; // elements with .relay-annotate-drag-match
   var dragHighlightTimer = null;
-  var sentUntil = 0; // timestamp — don't reset sent state until this expires
-  var sendingEnabled = false; // one-time onboarding gate for Send button
-  var processingState = "idle"; // 'idle' | 'processing' | 'done'
-  var processingTimer = null;
-  var PROCESSING_TIMEOUT_MS = 120000; // 2min safety reset
-  var SENT_DURATION_MS = 3000; // send button "Sent!" display time
-  var COPY_FEEDBACK_MS = 1500; // copy button checkmark duration
   var DEBOUNCE_MS = 150; // mutation observer debounce
   var DRAG_HIGHLIGHT_MS = 60; // drag highlight throttle interval
   var PIN_OFFSET = 10; // pin offset from element edge (half of pin size)
@@ -119,9 +112,6 @@
     "}",
     ".relay-toolbar-btn svg { width: 18px; height: 18px; flex-shrink: 0; }",
     ".relay-toolbar-btn--icon { width: 40px; padding: 0; cursor: grab; }",
-    ".relay-toolbar-btn.sent {",
-    "  background: var(--relay-success); color: #fff; border-color: var(--relay-success-border);",
-    "}",
     ".relay-toolbar-tooltip {",
     "  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);",
     "  display: none; align-items: center; gap: 4px;",
@@ -209,12 +199,6 @@
     "  outline: 2px solid var(--relay-primary) !important; outline-offset: -1px;",
     "  background-color: var(--relay-primary-muted) !important;",
     "}",
-    ".relay-send-count {",
-    "  display: inline-flex; align-items: center; justify-content: center;",
-    "  min-width: 18px; height: 18px; border-radius: 9px; padding: 0 5px;",
-    "  background: var(--relay-border); font-size: 11px; font-weight: 700; line-height: 1;",
-    "}",
-    ".relay-toolbar-btn.sent .relay-send-count { background: rgba(255,255,255,0.25); }",
     // --- Modal styles ---
     ".relay-annotate-modal-backdrop {",
     "  position: fixed; top: 0; left: 0; right: 0; bottom: 0;",
@@ -230,29 +214,6 @@
     ".relay-annotate-modal h3 {",
     "  font-size: 15px; font-weight: 700; margin: 0 0 12px;",
     "}",
-    ".relay-annotate-modal p {",
-    "  font-size: 13px; color: var(--relay-text-secondary); line-height: 1.5; margin: 0 0 12px;",
-    "}",
-    ".relay-annotate-modal-code {",
-    "  display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px;",
-    "  border-radius: var(--relay-radius-xs); margin: 0 0 12px;",
-    "  background: var(--relay-input-bg); border: 1px solid var(--relay-border-subtle);",
-    "}",
-    ".relay-annotate-modal-code code {",
-    '  flex: 1; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;',
-    "  font-size: 12px; color: var(--relay-text);",
-    "}",
-    ".relay-annotate-modal-code button {",
-    "  flex-shrink: 0; width: 28px; height: 28px; padding: 0; border-radius: var(--relay-radius-xs);",
-    "  border: 1px solid var(--relay-border-subtle); cursor: pointer;",
-    "  background: transparent; color: var(--relay-text-secondary);",
-    "  display: flex; align-items: center; justify-content: center;",
-    "  transition: background 0.15s, color 0.15s;",
-    "}",
-    ".relay-annotate-modal-code button:hover {",
-    "  background: var(--relay-btn-hover); color: var(--relay-text);",
-    "}",
-    ".relay-annotate-modal-code button svg { width: 14px; height: 14px; }",
     ".relay-annotate-modal > button {",
     "  width: 100%; height: 36px; border-radius: var(--relay-radius-sm); border: none; cursor: pointer;",
     "  background: var(--relay-primary); color: #fff; font-size: 13px; font-weight: 600;",
@@ -279,20 +240,6 @@
     "  border: 1px solid var(--relay-border); background: var(--relay-btn-bg);",
     "  font-family: inherit; font-size: 12px; line-height: 1.3;",
     "}",
-    // --- Processing state spinner ---
-    "@keyframes relay-spin { to { transform: rotate(360deg); } }",
-    ".relay-toolbar-btn.processing {",
-    "  pointer-events: none;",
-    "}",
-    ".relay-processing-spinner {",
-    "  width: 16px; height: 16px; border: 2px solid var(--relay-border);",
-    "  border-top-color: var(--relay-text); border-radius: 50%;",
-    "  animation: relay-spin 0.6s linear infinite; flex-shrink: 0;",
-    "}",
-    ".relay-toolbar-btn.done {",
-    "  background: var(--relay-success); color: #fff; border-color: var(--relay-success-border);",
-    "  pointer-events: none;",
-    "}",
   ].join("\\n");
   document.head.appendChild(styleEl);
 
@@ -301,17 +248,8 @@
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>';
   var CLOSE_SVG =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-  var SEND_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>';
-  var CHECK_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
   var TRASH_SVG =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
-  var SEND_TO_BACK_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="14" width="8" height="8" rx="2"/><rect x="2" y="2" width="8" height="8" rx="2"/><path d="M7 14v1a2 2 0 0 0 2 2h1"/><path d="M14 7h1a2 2 0 0 1 2 2v1"/></svg>';
-  var COPY_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-
   // --- Selector generator ---
   var MAX_SELECTOR_DEPTH = 10;
   function generateSelector(el, depth) {
@@ -506,22 +444,6 @@
     return btn;
   }
 
-  // Send to AI button
-  var sendBtn = createToolbarBtn({ icon: SEND_SVG, label: "Send", tooltip: "<kbd>Shift</kbd><kbd>S</kbd>" });
-  var sendIconSpan = sendBtn.querySelector("span");
-  var sendLabel = sendIconSpan.nextElementSibling;
-  var sendCountBadge = document.createElement("span");
-  sendCountBadge.className = "relay-send-count";
-  sendCountBadge.textContent = "0";
-  sendBtn.insertBefore(sendCountBadge, sendBtn.querySelector(".relay-toolbar-tooltip"));
-
-  // "Enable sending" button (onboarding gate — shown instead of sendBtn until dismissed)
-  var enableSendBtn = createToolbarBtn({
-    icon: SEND_TO_BACK_SVG,
-    label: "Enable sending",
-    tooltip: "<kbd>Shift</kbd><kbd>S</kbd>",
-  });
-
   // Clear all button (icon-only, next to toggle)
   var clearBtn = createToolbarBtn({ icon: TRASH_SVG, iconOnly: true, tooltip: "<kbd>Shift</kbd><kbd>X</kbd>" });
 
@@ -603,59 +525,6 @@
     return { backdrop: backdrop, card: card, show: show, hide: hide };
   }
 
-  // --- Instructional modal ---
-  var instructModal = createModal();
-  var modalBackdrop = instructModal.backdrop;
-  var modalCard = instructModal.card;
-  var modalH3 = document.createElement("h3");
-  modalH3.textContent = "Send annotations to your AI";
-  modalCard.appendChild(modalH3);
-  var modalP1 = document.createElement("p");
-  modalP1.textContent = "In your terminal, ask the agent to wait for and address your annotations. For example:";
-  modalCard.appendChild(modalP1);
-  var EXAMPLE_PROMPT = "Wait for and address my annotations";
-  var modalCodeWrap = document.createElement("div");
-  modalCodeWrap.className = "relay-annotate-modal-code";
-  var modalCode = document.createElement("code");
-  modalCode.textContent = EXAMPLE_PROMPT;
-  modalCodeWrap.appendChild(modalCode);
-  var modalCopyBtn = document.createElement("button");
-  modalCopyBtn.innerHTML = COPY_SVG;
-  modalCopyBtn.addEventListener("click", function (e) {
-    e.stopPropagation();
-    navigator.clipboard.writeText(EXAMPLE_PROMPT).then(function () {
-      modalCopyBtn.innerHTML = CHECK_SVG;
-      setTimeout(function () {
-        modalCopyBtn.innerHTML = COPY_SVG;
-      }, COPY_FEEDBACK_MS);
-    });
-  });
-  modalCodeWrap.appendChild(modalCopyBtn);
-  modalCard.appendChild(modalCodeWrap);
-  var modalP2 = document.createElement("p");
-  modalP2.textContent =
-    "Once listening, you can send feedback directly from the browser. To ask a question, interrupt the agent first.";
-  modalCard.appendChild(modalP2);
-  var modalOkBtn = document.createElement("button");
-  modalOkBtn.textContent = "OK";
-  modalCard.appendChild(modalOkBtn);
-
-  function showModal() {
-    instructModal.show();
-  }
-  function dismissModal() {
-    sendingEnabled = true;
-    instructModal.hide();
-    updateToolbarState();
-  }
-  modalOkBtn.addEventListener("click", dismissModal);
-  modalBackdrop.addEventListener("click", dismissModal);
-
-  enableSendBtn.addEventListener("click", function (e) {
-    e.stopPropagation();
-    showModal();
-  });
-
   // --- Theme toggle ---
   function toggleTheme() {
     var current = rootEl.getAttribute("data-relay-theme");
@@ -673,7 +542,6 @@
   shortcutsTable.className = "relay-shortcuts-table";
   var shortcuts = [
     ["Shift", "A", "Toggle annotation mode"],
-    ["Shift", "S", "Send to AI"],
     ["Shift", "X", "Clear all annotations"],
     ["Shift", "D", "Toggle light / dark"],
     ["Esc", null, "Dismiss / exit"],
@@ -717,8 +585,6 @@
     // Collect visible buttons in order: closest to toggle first
     var btns = [];
     if (clearBtn.style.display !== "none") btns.push(clearBtn);
-    if (sendBtn.style.display !== "none") btns.push(sendBtn);
-    if (enableSendBtn.style.display !== "none") btns.push(enableSendBtn);
     if (btns.length === 0) return;
 
     // Measure widths
@@ -1373,59 +1239,11 @@
       return a.status === "open";
     }).length;
 
-    // Clear button: show next to toggle when annotations exist and idle
-    if (openCount > 0 && processingState === "idle") {
+    // Clear button: show next to toggle when annotations exist
+    if (openCount > 0) {
       clearBtn.style.display = "flex";
     } else {
       clearBtn.style.display = "none";
-    }
-
-    // Processing/done states override normal button appearance
-    if (processingState === "processing") {
-      enableSendBtn.style.display = "none";
-      sendBtn.style.display = "flex";
-      sendBtn.classList.remove("sent");
-      sendBtn.classList.add("processing");
-      sendBtn.classList.remove("done");
-      sendIconSpan.innerHTML = '<div class="relay-processing-spinner"></div>';
-      sendLabel.textContent = "Working...";
-      sendCountBadge.style.display = "none";
-      sendBtn.style.pointerEvents = "none";
-    } else if (processingState === "done") {
-      enableSendBtn.style.display = "none";
-      sendBtn.style.display = "flex";
-      sendBtn.classList.remove("sent");
-      sendBtn.classList.remove("processing");
-      sendBtn.classList.add("done");
-      sendIconSpan.innerHTML = CHECK_SVG;
-      sendLabel.textContent = "Done!";
-      sendCountBadge.style.display = "none";
-      sendBtn.style.pointerEvents = "none";
-    } else if (openCount > 0) {
-      sendBtn.classList.remove("processing");
-      sendBtn.classList.remove("done");
-      sendCountBadge.style.display = "";
-      if (sendingEnabled) {
-        enableSendBtn.style.display = "none";
-        sendBtn.style.display = "flex";
-        sendCountBadge.textContent = String(openCount);
-        // Only reset sent state after the animation window expires
-        if (Date.now() >= sentUntil) {
-          sendBtn.classList.remove("sent");
-          sendIconSpan.innerHTML = SEND_SVG;
-          sendLabel.textContent = "Send";
-          sendBtn.style.pointerEvents = "";
-        }
-      } else {
-        sendBtn.style.display = "none";
-        enableSendBtn.style.display = "flex";
-      }
-    } else {
-      sendBtn.classList.remove("processing");
-      sendBtn.classList.remove("done");
-      sendCountBadge.style.display = "";
-      sendBtn.style.display = "none";
-      enableSendBtn.style.display = "none";
     }
 
     layoutToolbar();
@@ -1493,35 +1311,6 @@
     true,
   );
 
-  // --- Send to AI click handler ---
-  function triggerSend() {
-    if (sendBtn.classList.contains("sent")) return;
-    sentUntil = Date.now() + SENT_DURATION_MS;
-    sendBtn.classList.add("sent");
-    sendIconSpan.innerHTML = CHECK_SVG;
-    sendLabel.textContent = "Sent!";
-    sendBtn.style.pointerEvents = "none";
-    fetch(getApiBase() + "/annotations/send", { method: "POST" }).catch(function (err) {
-      console.error("Send to AI failed:", err);
-    });
-    // Revert after sent duration if there are still open annotations
-    setTimeout(function () {
-      var openCount = annotations.filter(function (a) {
-        return a.status === "open";
-      }).length;
-      if (openCount > 0) {
-        sendBtn.classList.remove("sent");
-        sendIconSpan.innerHTML = SEND_SVG;
-        sendLabel.textContent = "Send";
-        sendBtn.style.pointerEvents = "";
-      }
-    }, SENT_DURATION_MS);
-  }
-  sendBtn.addEventListener("click", function (e) {
-    e.stopPropagation();
-    triggerSend();
-  });
-
   // --- Refresh function ---
   function refreshAnnotations() {
     currentPath = location.pathname;
@@ -1537,31 +1326,6 @@
 
   // Expose globally for MCP tools
   window.__relayAnnotateRefresh = refreshAnnotations;
-
-  // Processing state control — called by MCP via CDP Runtime.evaluate
-  window.__relaySetProcessingState = function (state) {
-    processingState = state;
-    if (processingTimer) {
-      clearTimeout(processingTimer);
-      processingTimer = null;
-    }
-
-    if (state === "processing") {
-      // Auto-reset after 2 min (handles AI crash/disconnect)
-      processingTimer = setTimeout(function () {
-        processingState = "idle";
-        updateToolbarState();
-      }, PROCESSING_TIMEOUT_MS);
-    } else if (state === "done") {
-      // Show "Done!" then reset
-      processingTimer = setTimeout(function () {
-        processingState = "idle";
-        updateToolbarState();
-      }, SENT_DURATION_MS);
-    }
-
-    updateToolbarState();
-  };
 
   // --- URL change detection (SPA navigation) ---
   function onUrlChange() {
@@ -1631,17 +1395,6 @@
       e.preventDefault();
       setAnnotationMode(!annotationMode);
     }
-    // Shift+S to send to AI (or open onboarding modal)
-    if (e.shiftKey && e.key === "S" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (isEditingText()) return;
-      if (enableSendBtn.style.display !== "none") {
-        e.preventDefault();
-        showModal();
-      } else if (sendBtn.style.display !== "none") {
-        e.preventDefault();
-        triggerSend();
-      }
-    }
     // Shift+X to clear all
     if (e.shiftKey && e.key === "X" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (isEditingText()) return;
@@ -1670,8 +1423,6 @@
     if (e.key === "Escape") {
       if (shortcutsBackdrop.style.display !== "none") {
         dismissShortcuts();
-      } else if (modalBackdrop.style.display !== "none") {
-        dismissModal();
       } else if (dragState && dragState.dragging) {
         dragState = null;
         selectionRectEl.style.display = "none";

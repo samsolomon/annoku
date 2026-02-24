@@ -440,64 +440,6 @@ describe("Annotation cap", () => {
   });
 });
 
-// --- consumeSentState tests ---
-
-describe("consumeSentState", () => {
-  it("returns false when no send has been triggered", () => {
-    const srv = new AnnotationServer();
-    expect(srv.consumeSentState()).toBe(false);
-  });
-
-  it("returns true after send is triggered, then false on second call", async () => {
-    const srv = new AnnotationServer();
-    // Use a high port to avoid conflicts with the other describe block's server
-    process.env.ANNOTATION_PORT = "19223";
-    let port: number;
-    try {
-      port = await srv.start();
-    } finally {
-      delete process.env.ANNOTATION_PORT;
-    }
-
-    // Trigger a send via HTTP
-    await fetch(`http://127.0.0.1:${port}/annotations/send`, { method: "POST" });
-
-    expect(srv.consumeSentState()).toBe(true);
-    expect(srv.consumeSentState()).toBe(false);
-
-    await srv.shutdown();
-  });
-});
-
-// --- waitForSend tests ---
-
-describe("waitForSend", () => {
-  it("resolves immediately if send was latched", async () => {
-    const srv = new AnnotationServer();
-    process.env.ANNOTATION_PORT = "19224";
-    let port: number;
-    try {
-      port = await srv.start();
-    } finally {
-      delete process.env.ANNOTATION_PORT;
-    }
-
-    // Trigger send (latches because no waiter is active)
-    await fetch(`http://127.0.0.1:${port}/annotations/send`, { method: "POST" });
-
-    const result = await srv.waitForSend(5000);
-    expect(result.triggered).toBe(true);
-
-    await srv.shutdown();
-  });
-
-  it("times out when no send occurs", async () => {
-    const srv = new AnnotationServer();
-    const result = await srv.waitForSend(50);
-    expect(result.triggered).toBe(false);
-  });
-});
-
 // --- Direct method tests ---
 
 describe("AnnotationServer methods", () => {
