@@ -286,6 +286,22 @@ describe("AnnotationServer HTTP", () => {
     expect(res.status).toBe(404);
   });
 
+  it("serves overlay script via GET /overlay.js when builder is registered", async () => {
+    server.onOverlayScript((p) => `/* overlay for port ${p} */`);
+    const res = await fetch(`${baseUrl}/overlay.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/javascript");
+    const body = await res.text();
+    expect(body).toContain(`/* overlay for port ${port} */`);
+    // Reset
+    server.onOverlayScript(null as never);
+  });
+
+  it("returns 503 for GET /overlay.js when no builder is registered", async () => {
+    const res = await fetch(`${baseUrl}/overlay.js`);
+    expect(res.status).toBe(503);
+  });
+
   it("defaults selectorConfidence to fragile for unknown values", async () => {
     const res = await fetch(`${baseUrl}/annotations`, {
       method: "POST",

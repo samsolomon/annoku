@@ -10,6 +10,8 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+annotationServer.onOverlayScript(buildOverlayScript);
+
 annotationServer.onSendNotify((count) => {
   server
     .sendLoggingMessage({

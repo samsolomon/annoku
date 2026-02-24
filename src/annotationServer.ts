@@ -162,6 +162,7 @@ export class AnnotationServer {
   private sentTriggered = false;
   private persistEnabled = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private overlayScriptBuilder: ((port: number) => string) | null = null;
 
   /**
    * Register a callback to capture element screenshots via CDP.
@@ -176,6 +177,13 @@ export class AnnotationServer {
    */
   onSendNotify(cb: (count: number) => void): void {
     this.sendNotifyCallback = cb;
+  }
+
+  /**
+   * Register the overlay script builder so the server can serve it via GET /overlay.js.
+   */
+  onOverlayScript(builder: (port: number) => string): void {
+    this.overlayScriptBuilder = builder;
   }
 
   consumeSentState(): boolean {
@@ -375,6 +383,21 @@ export class AnnotationServer {
           },
           req,
         );
+        return;
+      }
+
+      // GET /overlay.js — serve the overlay IIFE for browser injection
+      if (method === "GET" && path === "/overlay.js") {
+        if (!this.overlayScriptBuilder || !this.port) {
+          jsonResponse(res, 503, { error: "Overlay script not available" }, req);
+          return;
+        }
+        const script = this.overlayScriptBuilder(this.port);
+        res.writeHead(200, {
+          ...corsHeaders(req),
+          "Content-Type": "application/javascript",
+        });
+        res.end(script);
         return;
       }
 
