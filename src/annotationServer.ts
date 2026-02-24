@@ -1,5 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { writeFileSync, unlinkSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 function parseIntWithDefault(value: string | undefined, defaultValue: number): number {
   const parsed = parseInt(value ?? "", 10);
@@ -43,7 +45,9 @@ export function isAllowedOrigin(origin: string | undefined): string | null {
     ) {
       return origin;
     }
-  } catch { /* invalid URL */ }
+  } catch {
+    /* invalid URL */
+  }
   return null;
 }
 
@@ -54,7 +58,7 @@ function corsHeaders(req?: IncomingMessage): Record<string, string> {
     "Access-Control-Allow-Origin": allowed,
     "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
+    Vary: "Origin",
   };
 }
 
@@ -67,7 +71,9 @@ function jsonResponse(res: ServerResponse, status: number, body: unknown, req?: 
 const MAX_ANNOTATIONS = 50;
 const MAX_BODY_BYTES = 64 * 1024; // 64KB
 const MAX_TEXT_LENGTH = 10 * 1024; // 10KB
+const MAX_SELECTOR_LENGTH = 2048;
 const MAX_VIEWPORT_DIM = 100_000;
+const MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024; // 20MB
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -87,9 +93,62 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+// --- Port file ---
+
+export interface PortFileData {
+  port: number;
+  pid: number;
+  startedAt: string;
+}
+
+function getPortFilePath(): string {
+  return process.env.ANNOKU_PORT_FILE || `${tmpdir()}/.annoku.port`;
+}
+
+function writePortFile(port: number): void {
+  const data: PortFileData = { port, pid: process.pid, startedAt: new Date().toISOString() };
+  writeFileSync(getPortFilePath(), JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+}
+
+function deletePortFile(): void {
+  try {
+    unlinkSync(getPortFilePath());
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
+/**
+ * Read the port file written by a running AnnotationServer.
+ * Returns null if the file does not exist or cannot be parsed.
+ */
+export function readPortFile(): PortFileData | null {
+  try {
+    const raw = readFileSync(getPortFilePath(), "utf8");
+    return JSON.parse(raw) as PortFileData;
+  } catch {
+    return null;
+  }
+}
+
 // --- Annotation Server ---
 
-export type ScreenshotCallback = (rect: { x: number; y: number; width: number; height: number }) => Promise<string | null>;
+export type ScreenshotCallback = (rect: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) => Promise<string | null>;
+
+export interface StartOptions {
+  persist?: boolean;
+}
+
+const PERSIST_DEBOUNCE_MS = 300;
+
+function getPersistFilePath(): string {
+  return process.env.ANNOKU_PERSIST_FILE || `${tmpdir()}/.annoku-annotations.json`;
+}
 
 export class AnnotationServer {
   private server: ReturnType<typeof createServer> | null = null;
@@ -101,6 +160,8 @@ export class AnnotationServer {
   private sendLatched = false;
   private sendNotifyCallback: ((count: number) => void) | null = null;
   private sentTriggered = false;
+  private persistEnabled = false;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Register a callback to capture element screenshots via CDP.
@@ -163,9 +224,45 @@ export class AnnotationServer {
     });
   }
 
-  async start(): Promise<number> {
+  private loadPersistedAnnotations(): void {
+    try {
+      const raw = readFileSync(getPersistFilePath(), "utf8");
+      const arr = JSON.parse(raw) as Annotation[];
+      for (const ann of arr) {
+        this.annotations.set(ann.id, ann);
+      }
+    } catch {
+      // File doesn't exist or is invalid — start fresh
+    }
+  }
+
+  private schedulePersist(): void {
+    if (!this.persistEnabled) return;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.flushPersist();
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  private flushPersist(): void {
+    if (!this.persistEnabled) return;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    const data = Array.from(this.annotations.values());
+    writeFileSync(getPersistFilePath(), JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+  }
+
+  async start(options?: StartOptions): Promise<number> {
     if (this.server) {
       return this.port!;
+    }
+
+    this.persistEnabled = !!(options?.persist || process.env.ANNOKU_PERSIST === "1");
+    if (this.persistEnabled) {
+      this.loadPersistedAnnotations();
     }
 
     const basePort = parseIntWithDefault(process.env.ANNOTATION_PORT, 9223);
@@ -175,12 +272,13 @@ export class AnnotationServer {
       try {
         await this.listen(port);
         this.port = port;
-        console.error(`[relay-annotations] Annotation server listening on port ${port}`);
+        writePortFile(port);
+        console.error(`[annoku] Annotation server listening on port ${port}`);
         return port;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === "EADDRINUSE") {
-          console.error(`[relay-annotations] Port ${port} in use, trying next...`);
+          console.error(`[annoku] Port ${port} in use, trying next...`);
           continue;
         }
         throw err;
@@ -219,24 +317,30 @@ export class AnnotationServer {
     if (!ann) return undefined;
     ann.status = "resolved";
     ann.updatedAt = new Date().toISOString();
+    this.schedulePersist();
     return ann;
   }
 
   deleteAnnotation(id: string): boolean {
-    return this.annotations.delete(id);
+    const deleted = this.annotations.delete(id);
+    if (deleted) this.schedulePersist();
+    return deleted;
   }
 
   clearAnnotations(): number {
     const count = this.annotations.size;
     this.annotations.clear();
+    if (count > 0) this.schedulePersist();
     return count;
   }
 
   async shutdown(): Promise<void> {
     if (!this.server) return;
+    this.flushPersist();
     return new Promise((resolve) => {
       this.server!.close(() => {
-        console.error("[relay-annotations] Annotation server stopped.");
+        deletePortFile();
+        console.error("[annoku] Annotation server stopped.");
         this.server = null;
         this.port = null;
         resolve();
@@ -261,11 +365,16 @@ export class AnnotationServer {
 
       // Health check
       if (method === "GET" && path === "/") {
-        jsonResponse(res, 200, {
-          status: "ok",
-          count: this.annotations.size,
-          port: this.port,
-        }, req);
+        jsonResponse(
+          res,
+          200,
+          {
+            status: "ok",
+            count: this.annotations.size,
+            port: this.port,
+          },
+          req,
+        );
         return;
       }
 
@@ -289,7 +398,14 @@ export class AnnotationServer {
       // POST /annotations — create
       if (method === "POST" && path === "/annotations") {
         if (this.annotations.size >= MAX_ANNOTATIONS) {
-          jsonResponse(res, 429, { error: `Maximum of ${MAX_ANNOTATIONS} annotations reached. Resolve or delete existing annotations first.` }, req);
+          jsonResponse(
+            res,
+            429,
+            {
+              error: `Maximum of ${MAX_ANNOTATIONS} annotations reached. Resolve or delete existing annotations first.`,
+            },
+            req,
+          );
           return;
         }
 
@@ -307,10 +423,41 @@ export class AnnotationServer {
           return;
         }
 
+        const selector = String(body.selector ?? "");
+        if (selector.length > MAX_SELECTOR_LENGTH) {
+          jsonResponse(
+            res,
+            400,
+            { error: `Selector exceeds maximum length of ${MAX_SELECTOR_LENGTH} characters` },
+            req,
+          );
+          return;
+        }
+        if (Array.isArray(body.elements)) {
+          for (const el of body.elements as Record<string, unknown>[]) {
+            if (String(el.selector ?? "").length > MAX_SELECTOR_LENGTH) {
+              jsonResponse(
+                res,
+                400,
+                { error: `Element selector exceeds maximum length of ${MAX_SELECTOR_LENGTH} characters` },
+                req,
+              );
+              return;
+            }
+          }
+        }
+
         const viewport = body.viewport as { width?: number; height?: number } | undefined;
         const vw = Number(viewport?.width ?? 0);
         const vh = Number(viewport?.height ?? 0);
-        if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw < 0 || vh < 0 || vw > MAX_VIEWPORT_DIM || vh > MAX_VIEWPORT_DIM) {
+        if (
+          !Number.isFinite(vw) ||
+          !Number.isFinite(vh) ||
+          vw < 0 ||
+          vh < 0 ||
+          vw > MAX_VIEWPORT_DIM ||
+          vh > MAX_VIEWPORT_DIM
+        ) {
           jsonResponse(res, 400, { error: "Invalid viewport dimensions" }, req);
           return;
         }
@@ -320,30 +467,42 @@ export class AnnotationServer {
 
         // Capture screenshot via CDP if we have a valid rect and a callback
         let screenshot: string | null = null;
-        if (elementRect && this.screenshotCallback
-          && Number(elementRect.width ?? 0) > 0 && Number(elementRect.height ?? 0) > 0) {
+        if (
+          elementRect &&
+          this.screenshotCallback &&
+          Number(elementRect.width ?? 0) > 0 &&
+          Number(elementRect.height ?? 0) > 0
+        ) {
           try {
-            screenshot = await this.screenshotCallback({
+            const result = await this.screenshotCallback({
               x: Number(elementRect.x ?? 0),
               y: Number(elementRect.y ?? 0),
               width: Number(elementRect.width ?? 0),
               height: Number(elementRect.height ?? 0),
             });
+            if (result && result.length > MAX_SCREENSHOT_BYTES) {
+              console.error(`[annoku] Screenshot too large (${result.length} bytes), discarding`);
+            } else {
+              screenshot = result;
+            }
           } catch (err) {
-            console.error(`[relay-annotations] Screenshot capture failed: ${err instanceof Error ? err.message : err}`);
+            console.error(`[annoku] Screenshot capture failed: ${err instanceof Error ? err.message : err}`);
           }
         }
 
         const annotation: Annotation = {
           id: randomUUID(),
           url: String(body.url ?? ""),
-          selector: String(body.selector ?? ""),
+          selector,
           selectorConfidence: body.selectorConfidence === "stable" ? "stable" : "fragile",
           text,
           status: "open",
           viewport: { width: vw, height: vh },
           reactSource: reactSource?.component
-            ? { component: String(reactSource.component), source: reactSource.source ? String(reactSource.source) : undefined }
+            ? {
+                component: String(reactSource.component),
+                source: reactSource.source ? String(reactSource.source) : undefined,
+              }
             : null,
           screenshot,
           createdAt: now,
@@ -357,7 +516,7 @@ export class AnnotationServer {
             const elReact = el.reactSource as { component?: string; source?: string } | undefined;
             return {
               selector: String(el.selector ?? ""),
-              selectorConfidence: el.selectorConfidence === "stable" ? "stable" : "fragile" as const,
+              selectorConfidence: el.selectorConfidence === "stable" ? "stable" : ("fragile" as const),
               reactSource: elReact?.component
                 ? { component: String(elReact.component), source: elReact.source ? String(elReact.source) : undefined }
                 : null,
@@ -377,6 +536,7 @@ export class AnnotationServer {
         }
 
         this.annotations.set(annotation.id, annotation);
+        this.schedulePersist();
         jsonResponse(res, 201, { id: annotation.id }, req);
         return;
       }
@@ -427,6 +587,7 @@ export class AnnotationServer {
             ann.text = body.text;
           }
           ann.updatedAt = new Date().toISOString();
+          this.schedulePersist();
           jsonResponse(res, 200, ann, req);
           return;
         }
@@ -438,6 +599,7 @@ export class AnnotationServer {
             jsonResponse(res, 404, { error: "Annotation not found" }, req);
             return;
           }
+          this.schedulePersist();
           jsonResponse(res, 200, { success: true }, req);
           return;
         }
@@ -446,7 +608,7 @@ export class AnnotationServer {
       // 404
       jsonResponse(res, 404, { error: "Not found" }, req);
     } catch (err) {
-      console.error("[relay-annotations] Annotation server error:", err);
+      console.error("[annoku] Annotation server error:", err);
       jsonResponse(res, 500, { error: "Internal server error" }, req);
     }
   }

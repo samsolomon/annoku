@@ -1,5 +1,5 @@
 {
-  "name": "relay-annotations",
+  "name": "annoku",
   "version": "0.1.0",
   "description": "Standalone browser annotation overlay and HTTP annotation server",
   "type": "module",
@@ -15,10 +15,16 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "prebuild": "node scripts/inline-overlay.mjs",
+    "build": "npm run prebuild && tsup",
     "start": "node dist/mcp.js",
-    "dev": "tsx src/mcp.ts",
+    "dev": "npm run prebuild && tsx src/mcp.ts",
+    "pretest": "npm run prebuild",
     "test": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -26,10 +32,15 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.3.0",
+    "eslint": "^10.0.2",
+    "globals": "^17.3.0",
+    "prettier": "^3.8.1",
     "tsup": "^8.4.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.56.1",
     "vitest": "^4.0.18"
   }
 }

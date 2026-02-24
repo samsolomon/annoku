@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { AnnotationServer, isAllowedOrigin } from "./annotationServer.js";
+import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { AnnotationServer, isAllowedOrigin, readPortFile } from "./annotationServer.js";
 
 // --- CORS origin validation ---
 
@@ -180,6 +181,37 @@ describe("AnnotationServer HTTP", () => {
   it("returns 404 for unknown annotation ID", async () => {
     const res = await fetch(`${baseUrl}/annotations/nonexistent-id`, { method: "DELETE" });
     expect(res.status).toBe(404);
+  });
+
+  it("rejects selector exceeding max length", async () => {
+    const longSelector = ".x".repeat(1500); // 3000 chars
+    const res = await fetch(`${baseUrl}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "ok", selector: longSelector, viewport: { width: 800, height: 600 } }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/Selector exceeds/);
+  });
+
+  it("rejects element selector exceeding max length", async () => {
+    const longSelector = ".x".repeat(1500);
+    const res = await fetch(`${baseUrl}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "ok",
+        selector: ".ok",
+        viewport: { width: 800, height: 600 },
+        elements: [
+          { selector: longSelector, selectorConfidence: "stable", elementRect: { x: 0, y: 0, width: 10, height: 10 } },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/Element selector exceeds/);
   });
 
   it("rejects text that is too long", async () => {
@@ -461,5 +493,235 @@ describe("AnnotationServer methods", () => {
   it("deleteAnnotation returns false for missing id", () => {
     const srv = new AnnotationServer();
     expect(srv.deleteAnnotation("nonexistent")).toBe(false);
+  });
+});
+
+// --- Screenshot size guard tests ---
+
+describe("Screenshot size guard", () => {
+  let srv: AnnotationServer;
+  let port: number;
+  let url: string;
+
+  beforeAll(async () => {
+    srv = new AnnotationServer();
+    process.env.ANNOTATION_PORT = "19226";
+    try {
+      port = await srv.start();
+    } finally {
+      delete process.env.ANNOTATION_PORT;
+    }
+    url = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await srv.shutdown();
+  });
+
+  it("stores null when screenshot callback returns oversized data", async () => {
+    const oversized = "x".repeat(21 * 1024 * 1024); // 21MB
+    srv.onScreenshot(async () => oversized);
+
+    const res = await fetch(`${url}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "oversized screenshot",
+        viewport: { width: 800, height: 600 },
+        elementRect: { x: 0, y: 0, width: 100, height: 100 },
+      }),
+    });
+    expect(res.status).toBe(201);
+    const { id } = await res.json();
+    const ann = srv.getAnnotation(id);
+    expect(ann?.screenshot).toBeNull();
+
+    // Reset callback
+    srv.onScreenshot(async () => null);
+  });
+
+  it("stores screenshot when within size limit", async () => {
+    srv.onScreenshot(async () => "data:image/png;base64,small");
+
+    const res = await fetch(`${url}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "normal screenshot",
+        viewport: { width: 800, height: 600 },
+        elementRect: { x: 0, y: 0, width: 100, height: 100 },
+      }),
+    });
+    expect(res.status).toBe(201);
+    const { id } = await res.json();
+    const ann = srv.getAnnotation(id);
+    expect(ann?.screenshot).toBe("data:image/png;base64,small");
+
+    srv.onScreenshot(async () => null);
+  });
+});
+
+// --- Port file tests ---
+
+describe("Port file", () => {
+  const portFilePath = `${process.env.TMPDIR || "/tmp"}/.annoku-test-portfile.port`;
+
+  it("writes port file on start and deletes on shutdown", async () => {
+    process.env.ANNOKU_PORT_FILE = portFilePath;
+    process.env.ANNOTATION_PORT = "19227";
+    const srv = new AnnotationServer();
+    try {
+      const port = await srv.start();
+
+      // Port file should exist with correct content
+      const data = readPortFile();
+      expect(data).not.toBeNull();
+      expect(data!.port).toBe(port);
+      expect(data!.pid).toBe(process.pid);
+      expect(typeof data!.startedAt).toBe("string");
+
+      await srv.shutdown();
+
+      // Port file should be deleted
+      expect(existsSync(portFilePath)).toBe(false);
+    } finally {
+      delete process.env.ANNOKU_PORT_FILE;
+      delete process.env.ANNOTATION_PORT;
+    }
+  });
+
+  it("readPortFile returns null when file does not exist", () => {
+    process.env.ANNOKU_PORT_FILE = "/tmp/.annoku-nonexistent-test.port";
+    try {
+      expect(readPortFile()).toBeNull();
+    } finally {
+      delete process.env.ANNOKU_PORT_FILE;
+    }
+  });
+});
+
+// --- Persistence tests ---
+
+describe("Annotation persistence", () => {
+  const persistFile = `${process.env.TMPDIR || "/tmp"}/.annoku-test-persist.json`;
+  const portFile = `${process.env.TMPDIR || "/tmp"}/.annoku-test-persist.port`;
+
+  it("persists annotations across restarts", async () => {
+    process.env.ANNOKU_PORT_FILE = portFile;
+    process.env.ANNOKU_PERSIST_FILE = persistFile;
+    process.env.ANNOTATION_PORT = "19230";
+    try {
+      // Start server with persistence
+      const srv1 = new AnnotationServer();
+      const port1 = await srv1.start({ persist: true });
+      const url1 = `http://127.0.0.1:${port1}`;
+
+      // Create an annotation
+      const createRes = await fetch(`${url1}/annotations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "persist-me", viewport: { width: 800, height: 600 } }),
+      });
+      expect(createRes.status).toBe(201);
+      const { id } = await createRes.json();
+
+      // Shutdown flushes to disk
+      await srv1.shutdown();
+
+      // Verify persist file exists
+      expect(existsSync(persistFile)).toBe(true);
+
+      // Start a new server with persistence — should load the annotation
+      const srv2 = new AnnotationServer();
+      await srv2.start({ persist: true });
+
+      const annotations = srv2.getAnnotations();
+      expect(annotations.length).toBe(1);
+      expect(annotations[0].id).toBe(id);
+      expect(annotations[0].text).toBe("persist-me");
+
+      await srv2.shutdown();
+    } finally {
+      delete process.env.ANNOKU_PORT_FILE;
+      delete process.env.ANNOKU_PERSIST_FILE;
+      delete process.env.ANNOTATION_PORT;
+      try {
+        unlinkSync(persistFile);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("debounces rapid writes", async () => {
+    process.env.ANNOKU_PORT_FILE = portFile;
+    process.env.ANNOKU_PERSIST_FILE = persistFile;
+    process.env.ANNOTATION_PORT = "19231";
+    try {
+      const srv = new AnnotationServer();
+      const port = await srv.start({ persist: true });
+      const url = `http://127.0.0.1:${port}`;
+
+      // Rapid-fire 10 annotations
+      for (let i = 0; i < 10; i++) {
+        await fetch(`${url}/annotations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: `rapid-${i}`, viewport: { width: 800, height: 600 } }),
+        });
+      }
+
+      // Wait for debounce to flush
+      await new Promise((r) => setTimeout(r, 500));
+
+      // Verify all 10 annotations are persisted
+      const raw = readFileSync(persistFile, "utf8");
+      const persisted = JSON.parse(raw);
+      expect(persisted.length).toBe(10);
+
+      await srv.shutdown();
+    } finally {
+      delete process.env.ANNOKU_PORT_FILE;
+      delete process.env.ANNOKU_PERSIST_FILE;
+      delete process.env.ANNOTATION_PORT;
+      try {
+        unlinkSync(persistFile);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("does not persist when persist is not enabled", async () => {
+    process.env.ANNOKU_PORT_FILE = portFile;
+    process.env.ANNOKU_PERSIST_FILE = persistFile;
+    process.env.ANNOTATION_PORT = "19232";
+    try {
+      // Make sure persist file doesn't exist
+      try {
+        unlinkSync(persistFile);
+      } catch {
+        /* ignore */
+      }
+
+      const srv = new AnnotationServer();
+      const port = await srv.start(); // no persist option
+      const url = `http://127.0.0.1:${port}`;
+
+      await fetch(`${url}/annotations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "no-persist", viewport: { width: 800, height: 600 } }),
+      });
+
+      await srv.shutdown();
+
+      // Persist file should NOT exist
+      expect(existsSync(persistFile)).toBe(false);
+    } finally {
+      delete process.env.ANNOKU_PORT_FILE;
+      delete process.env.ANNOKU_PERSIST_FILE;
+      delete process.env.ANNOTATION_PORT;
+    }
   });
 });

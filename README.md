@@ -41,7 +41,7 @@ export { isAllowedOrigin } from "./annotationServer.js";
 ## Usage
 
 ```ts
-import { annotationServer, buildOverlayScript } from "relay-annotations";
+import { annotationServer, buildOverlayScript } from "annoku";
 
 annotationServer.onScreenshot(async (rect) => {
   // consumer-owned screenshot implementation

@@ -11,51 +11,39 @@ const server = new McpServer({
 });
 
 annotationServer.onSendNotify((count) => {
-  server.sendLoggingMessage({
-    level: "info",
-    logger: "annoku-annotations",
-    data: count > 0
-      ? `User clicked Send with ${count} open annotation(s).`
-      : "User clicked Send with no open annotations.",
-  }).catch(() => {
-    // Ignore notification errors when transport is disconnected.
-  });
+  server
+    .sendLoggingMessage({
+      level: "info",
+      logger: "annoku-annotations",
+      data:
+        count > 0
+          ? `User clicked Send with ${count} open annotation(s).`
+          : "User clicked Send with no open annotations.",
+    })
+    .catch(() => {
+      // Ignore notification errors when transport is disconnected.
+    });
 });
 
-server.tool(
-  "start_annotation_server",
-  "Start the local annotation HTTP server (idempotent).",
-  {},
-  async () => {
-    const port = await annotationServer.start();
-    return {
-      content: [{ type: "text", text: JSON.stringify({ started: true, port }, null, 2) }],
-    };
-  },
-);
+server.tool("start_annotation_server", "Start the local annotation HTTP server (idempotent).", {}, async () => {
+  const port = await annotationServer.start();
+  return {
+    content: [{ type: "text", text: JSON.stringify({ started: true, port }, null, 2) }],
+  };
+});
 
-server.tool(
-  "stop_annotation_server",
-  "Stop the local annotation HTTP server.",
-  {},
-  async () => {
-    await annotationServer.shutdown();
-    return {
-      content: [{ type: "text", text: JSON.stringify({ stopped: true }, null, 2) }],
-    };
-  },
-);
+server.tool("stop_annotation_server", "Stop the local annotation HTTP server.", {}, async () => {
+  await annotationServer.shutdown();
+  return {
+    content: [{ type: "text", text: JSON.stringify({ stopped: true }, null, 2) }],
+  };
+});
 
-server.tool(
-  "get_annotation_port",
-  "Get the current annotation server port, or null if not running.",
-  {},
-  async () => {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ port: getAnnotationPort() }, null, 2) }],
-    };
-  },
-);
+server.tool("get_annotation_port", "Get the current annotation server port, or null if not running.", {}, async () => {
+  return {
+    content: [{ type: "text", text: JSON.stringify({ port: getAnnotationPort() }, null, 2) }],
+  };
+});
 
 server.tool(
   "build_overlay_script",
@@ -64,7 +52,7 @@ server.tool(
     port: z.number().int().min(1).max(65535).optional().describe("Optional port override"),
   },
   async ({ port }) => {
-    const resolvedPort = port ?? getAnnotationPort() ?? await annotationServer.start();
+    const resolvedPort = port ?? getAnnotationPort() ?? (await annotationServer.start());
     const script = buildOverlayScript(resolvedPort);
     return {
       content: [{ type: "text", text: script }],
@@ -72,16 +60,11 @@ server.tool(
   },
 );
 
-server.tool(
-  "list_annotations",
-  "List annotations currently stored in the local annotation server.",
-  {},
-  async () => {
-    return {
-      content: [{ type: "text", text: JSON.stringify(annotationServer.getAnnotations(), null, 2) }],
-    };
-  },
-);
+server.tool("list_annotations", "List annotations currently stored in the local annotation server.", {}, async () => {
+  return {
+    content: [{ type: "text", text: JSON.stringify(annotationServer.getAnnotations(), null, 2) }],
+  };
+});
 
 server.tool(
   "resolve_annotation",
@@ -123,17 +106,12 @@ server.tool(
   },
 );
 
-server.tool(
-  "clear_annotations",
-  "Clear all annotations from the server.",
-  {},
-  async () => {
-    const deleted = annotationServer.clearAnnotations();
-    return {
-      content: [{ type: "text", text: JSON.stringify({ success: true, deleted }, null, 2) }],
-    };
-  },
-);
+server.tool("clear_annotations", "Clear all annotations from the server.", {}, async () => {
+  const deleted = annotationServer.clearAnnotations();
+  return {
+    content: [{ type: "text", text: JSON.stringify({ success: true, deleted }, null, 2) }],
+  };
+});
 
 server.tool(
   "wait_for_send",
