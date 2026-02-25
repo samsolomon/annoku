@@ -18,22 +18,23 @@ package with no CDP or MCP-specific runtime dependencies.
 - Browser overlay script generation (`buildOverlayScript(port)`)
 - Local HTTP annotation server with CRUD endpoints
 - Screenshot callback hook (`onScreenshot`) implemented by the consumer
-
-The package intentionally has no CDP or MCP knowledge. Consumers provide those
-integrations from their own runtime.
+- Port file discovery (`readPortFile()`) for external tool integration
+- Opt-in annotation persistence across restarts
+- `GET /overlay.js` HTTP endpoint for token-efficient browser injection
 
 ## Exports
 
 ```ts
-// Core
 export { buildOverlayScript } from "./annotationOverlay.js";
-export { AnnotationServer, annotationServer, getAnnotationPort } from "./annotationServer.js";
+export {
+  AnnotationServer,
+  annotationServer,
+  getAnnotationPort,
+  isAllowedOrigin,
+  readPortFile,
+} from "./annotationServer.js";
 
-// Types
-export type { Annotation, AnnotationElement, ScreenshotCallback } from "./annotationServer.js";
-
-// Utility
-export { isAllowedOrigin } from "./annotationServer.js";
+export type { Annotation, AnnotationElement, ScreenshotCallback, PortFileData } from "./annotationServer.js";
 ```
 
 ## Usage
@@ -67,8 +68,12 @@ Each annotation can include:
 
 ## Development
 
-- `npm run build`
-- `npm test`
+```
+npm run build        # prebuild overlay + tsup bundle
+npm test             # prebuild overlay + vitest
+npm run lint         # eslint
+npm run format       # prettier --write
+```
 
 ## Run as MCP server
 
